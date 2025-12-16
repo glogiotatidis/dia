@@ -85,7 +85,7 @@ echo "   This may take 10-30 minutes depending on connection..."
 echo ""
 
 python scripts/download_greek_datasets.py \
-    --datasets commonvoice fleurs \
+    --datasets commonvoice voxpopuli \
     --output_dir $DATA_DIR \
     --max_samples 30000
 

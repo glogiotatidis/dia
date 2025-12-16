@@ -5,10 +5,11 @@ Download and prepare multiple Greek speech datasets for TTS training.
 Supported datasets:
 - Mozilla Common Voice (el)
 - Google Fleurs (el_gr)
+- VoxPopuli (el) - European Parliament speeches
 - CSS10 Greek (manual download required)
 
 Usage:
-    python scripts/download_greek_datasets.py --datasets commonvoice fleurs --output_dir data/el
+    python scripts/download_greek_datasets.py --datasets commonvoice voxpopuli --output_dir data/el
 """
 
 import argparse
@@ -71,16 +72,31 @@ def download_commonvoice(output_dir: Path, max_samples: Optional[int] = None) ->
     print("   This requires accepting the license at:")
     print("   https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
     
-    try:
-        ds = load_dataset(
-            "mozilla-foundation/common_voice_17_0",
-            "el",
-            split="train",
-            trust_remote_code=True
-        )
-    except Exception as e:
-        print(f"❌ Failed to load Common Voice: {e}")
-        print("   Run: huggingface-cli login")
+    ds = None
+    
+    # Try different Common Voice versions (newest first)
+    cv_versions = [
+        ("mozilla-foundation/common_voice_17_0", "el"),
+        ("mozilla-foundation/common_voice_16_1", "el"),
+        ("mozilla-foundation/common_voice_16_0", "el"),
+        ("mozilla-foundation/common_voice_13_0", "el"),
+    ]
+    
+    for dataset_name, lang in cv_versions:
+        try:
+            print(f"   Trying {dataset_name}...")
+            ds = load_dataset(dataset_name, lang, split="train")
+            print(f"   ✅ Loaded {dataset_name}")
+            break
+        except Exception as e:
+            print(f"   ⚠️  {dataset_name} failed: {str(e)[:100]}")
+            continue
+    
+    if ds is None:
+        print("❌ Failed to load Common Voice")
+        print("   Make sure you have:")
+        print("   1. Logged in: huggingface-cli login")
+        print("   2. Accepted the license at the dataset page")
         return []
     
     audio_dir = output_dir / "commonvoice" / "audio"
@@ -145,10 +161,31 @@ def download_fleurs(output_dir: Path, max_samples: Optional[int] = None) -> list
     
     print("\n📥 Downloading Google Fleurs (Greek)...")
     
-    try:
-        ds = load_dataset("google/fleurs", "el_gr", split="train", trust_remote_code=True)
-    except Exception as e:
-        print(f"❌ Failed to load Fleurs: {e}")
+    ds = None
+    
+    # Try different Fleurs sources
+    fleurs_sources = [
+        # Community Parquet version (no loading script needed)
+        ("google/fleurs", "el_gr"),
+        # Alternative community uploads
+        ("miracl/fleurs", "el_gr"),
+    ]
+    
+    for dataset_name, lang in fleurs_sources:
+        try:
+            print(f"   Trying {dataset_name}...")
+            ds = load_dataset(dataset_name, lang, split="train")
+            print(f"   ✅ Loaded {dataset_name}")
+            break
+        except Exception as e:
+            print(f"   ⚠️  {dataset_name} failed: {str(e)[:100]}")
+            continue
+    
+    if ds is None:
+        print("❌ Failed to load Fleurs")
+        print("   The google/fleurs dataset may require an older datasets version.")
+        print("   Try: pip install datasets==2.14.0")
+        print("   Or use CSS10 dataset instead with --datasets css10 --css10_path /path/to/css10")
         return []
     
     audio_dir = output_dir / "fleurs" / "audio"
@@ -204,6 +241,82 @@ def download_fleurs(output_dir: Path, max_samples: Optional[int] = None) -> list
         })
     
     print(f"   ✅ Processed {len(manifest)} samples from Fleurs")
+    return manifest
+
+
+def download_voxpopuli(output_dir: Path, max_samples: Optional[int] = None) -> list:
+    """Download and prepare VoxPopuli Greek (European Parliament speeches)."""
+    from datasets import load_dataset
+    
+    print("\n📥 Downloading VoxPopuli (Greek)...")
+    print("   Source: European Parliament speech recordings")
+    
+    ds = None
+    
+    try:
+        # VoxPopuli has good Parquet support
+        ds = load_dataset("facebook/voxpopuli", "el", split="train")
+        print("   ✅ Loaded facebook/voxpopuli")
+    except Exception as e:
+        print(f"❌ Failed to load VoxPopuli: {e}")
+        return []
+    
+    audio_dir = output_dir / "voxpopuli" / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    
+    manifest = []
+    total = min(len(ds), max_samples) if max_samples else len(ds)
+    
+    for idx, sample in enumerate(tqdm(ds, total=total, desc="VoxPopuli")):
+        if max_samples and idx >= max_samples:
+            break
+        
+        # VoxPopuli uses "normalized_text" or "raw_text"
+        text = sample.get("normalized_text") or sample.get("raw_text", "")
+        text = text.strip()
+        
+        if not text or len(text) < 5:
+            continue
+        
+        if not sample.get("audio"):
+            continue
+        
+        # Process audio
+        audio_array = sample["audio"]["array"]
+        orig_sr = sample["audio"]["sampling_rate"]
+        
+        import numpy as np
+        if isinstance(audio_array, np.ndarray):
+            audio_tensor = torch.from_numpy(audio_array).float().unsqueeze(0)
+        else:
+            audio_tensor = torch.tensor(audio_array).float().unsqueeze(0)
+        
+        wav, sr = normalize_audio(audio_tensor, orig_sr)
+        
+        # Check duration
+        duration = wav.shape[1] / sr
+        if duration < 1.0 or duration > 15.0:
+            continue
+        
+        # Phonemize
+        phonemes = phonemize_greek(text)
+        if not phonemes:
+            continue
+        
+        # Save
+        output_path = audio_dir / f"voxpopuli_{idx:06d}.wav"
+        torchaudio.save(str(output_path), wav, sr)
+        
+        manifest.append({
+            "audio": str(output_path),
+            "text": text,
+            "phonemes": phonemes,
+            "lang": "el",
+            "duration": round(duration, 2),
+            "source": "voxpopuli"
+        })
+    
+    print(f"   ✅ Processed {len(manifest)} samples from VoxPopuli")
     return manifest
 
 
@@ -288,7 +401,7 @@ def download_css10(output_dir: Path, css10_path: str) -> list:
 def main():
     parser = argparse.ArgumentParser(description="Download Greek TTS datasets")
     parser.add_argument("--datasets", nargs="+", 
-                        choices=["commonvoice", "fleurs", "css10", "all"],
+                        choices=["commonvoice", "fleurs", "voxpopuli", "css10", "all"],
                         default=["commonvoice"],
                         help="Datasets to download")
     parser.add_argument("--output_dir", type=str, default="data/el",
@@ -307,7 +420,7 @@ def main():
     
     datasets = args.datasets
     if "all" in datasets:
-        datasets = ["commonvoice", "fleurs"]
+        datasets = ["commonvoice", "voxpopuli", "fleurs"]
         if args.css10_path:
             datasets.append("css10")
     
@@ -316,6 +429,10 @@ def main():
     # Download each dataset
     if "commonvoice" in datasets:
         manifest = download_commonvoice(output_dir, args.max_samples)
+        all_manifest.extend(manifest)
+    
+    if "voxpopuli" in datasets:
+        manifest = download_voxpopuli(output_dir, args.max_samples)
         all_manifest.extend(manifest)
     
     if "fleurs" in datasets:
