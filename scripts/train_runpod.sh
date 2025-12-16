@@ -52,7 +52,7 @@ huggingface-cli login
 echo ""
 echo "📥 Downloading Greek datasets..."
 python scripts/download_greek_datasets.py \
-    --datasets commonvoice voxpopuli \
+    --datasets commonvoice fleurs \
     --output_dir /workspace/data/el \
     --max_samples 20000  # Adjust based on time/budget
 
