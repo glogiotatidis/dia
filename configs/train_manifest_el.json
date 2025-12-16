@@ -1,0 +1,23 @@
+[
+  {
+    "audio": "data/el/audio/sample1.wav",
+    "text": "Γεια σας, καλώς ήρθατε",
+    "phonemes": "ʝa sas kalós írθate",
+    "lang": "el",
+    "duration": 2.5
+  },
+  {
+    "audio": "data/el/audio/sample2.wav",
+    "text": "Πώς είστε σήμερα",
+    "phonemes": "pos íste símera",
+    "lang": "el",
+    "duration": 1.8
+  },
+  {
+    "audio": "data/el/audio/sample3.wav",
+    "text": "Ευχαριστώ πολύ",
+    "phonemes": "efxaristó polí",
+    "lang": "el",
+    "duration": 1.5
+  }
+]
