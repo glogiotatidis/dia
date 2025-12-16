@@ -63,7 +63,7 @@ if [ ! -d "dia" ]; then
     echo "📥 Cloning DIA repository..."
     git clone https://github.com/nari-labs/dia.git
 fi
-cd dia/dia-multilingual
+cd dia
 
 # Create data directory
 DATA_DIR="$WORK_DIR/data/el"

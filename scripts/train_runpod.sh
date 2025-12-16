@@ -36,13 +36,11 @@ apt-get update && apt-get install -y espeak-ng > /dev/null 2>&1
 echo "✅ espeak-ng installed"
 
 # Clone repo
-if [ ! -d "dia-multilingual" ]; then
+if [ ! -d "dia" ]; then
     echo "📥 Cloning repository..."
     git clone https://github.com/nari-labs/dia.git
-    cd dia/dia-multilingual
-else
-    cd dia-multilingual
 fi
+cd dia
 
 # Login to HuggingFace (for Common Voice)
 echo ""

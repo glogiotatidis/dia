@@ -25,7 +25,7 @@ Greek (`el`) is already supported in the language vocabulary with **token_id=12*
 ```bash
 # Clone the repository
 git clone https://github.com/nari-labs/dia.git
-cd dia/dia-multilingual
+cd dia
 
 # Install Python dependencies
 pip install -r requirements.txt
@@ -246,7 +246,7 @@ python scripts/infer_greek.py \
 After preparation, your directory should look like:
 
 ```
-dia-multilingual/
+dia/
 ├── configs/
 │   ├── lang_vocab.json          # Language tokens (el = 12)
 │   └── train_manifest_el.json   # Template manifest
@@ -312,7 +312,7 @@ For questions or issues, open a GitHub issue on the DIA repository.
 
 ```bash
 # Full pipeline from scratch
-cd dia-multilingual
+cd dia
 
 # 1. Prepare data (downloads ~5GB)
 python scripts/prepare_greek.py --source commonvoice --output_dir data/el
