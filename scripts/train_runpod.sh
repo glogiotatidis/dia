@@ -62,7 +62,7 @@ echo "✅ System packages installed"
 # Install Python dependencies
 echo "📦 Installing Python packages..."
 pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install -q transformers huggingface_hub speechbrain tqdm einops soundfile librosa
+pip install -q transformers huggingface_hub speechbrain tqdm einops soundfile librosa pydantic
 pip install -q 'datasets>=2.14.0,<3.0.0'
 echo "✅ Python packages installed"
 
