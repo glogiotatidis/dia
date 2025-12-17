@@ -29,14 +29,22 @@ echo "=============================================="
 echo "🚀 Greek TTS Training Setup (RunPod)"
 echo "=============================================="
 
-# Install dependencies
-echo "📦 Installing dependencies..."
-pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install -q transformers huggingface_hub speechbrain torchaudio tqdm einops
+# Install system dependencies
+echo "📦 Installing system packages..."
+apt-get update && apt-get install -y \
+    espeak-ng \
+    libsndfile1 \
+    ffmpeg \
+    git \
+    > /dev/null 2>&1
+echo "✅ System packages installed"
 
-# Install espeak-ng
-apt-get update && apt-get install -y espeak-ng > /dev/null 2>&1
-echo "✅ espeak-ng installed"
+# Install Python dependencies
+echo "📦 Installing Python packages..."
+pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install -q transformers huggingface_hub speechbrain tqdm einops soundfile librosa
+pip install -q 'datasets>=2.14.0,<3.0.0'
+echo "✅ Python packages installed"
 
 # Clone repo
 if [ ! -d "dia" ]; then
