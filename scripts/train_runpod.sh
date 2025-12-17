@@ -90,7 +90,17 @@ mkdir -p $CHECKPOINT_DIR $DATA_DIR
 if [ -f "/workspace/greek_data.tar.gz" ]; then
     echo "📦 Extracting Fleurs data..."
     tar -xzf /workspace/greek_data.tar.gz -C /workspace/data
-    echo "✅ Fleurs data extracted"
+    
+    # Fix audio paths in manifests (replace original path with actual path)
+    echo "🔧 Fixing manifest paths..."
+    for manifest in $DATA_DIR/manifests/*.json; do
+        if [ -f "$manifest" ]; then
+            # Replace any path prefix with the actual data directory
+            sed -i 's|"audio": "[^"]*/fleurs/audio/|"audio": "'$DATA_DIR'/fleurs/audio/|g' "$manifest"
+            sed -i 's|"audio": "[^"]*/commonvoice/audio/|"audio": "'$DATA_DIR'/commonvoice/audio/|g' "$manifest"
+        fi
+    done
+    echo "✅ Fleurs data extracted and paths fixed"
 fi
 
 # Extract CommonVoice data if available (for full training)
