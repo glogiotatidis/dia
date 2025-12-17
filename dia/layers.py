@@ -866,6 +866,9 @@ class DiaModel(nn.Module):
         enable_dropout: bool = True,
     ):
         deterministic = not enable_dropout
+        device = src_BxS.device
+        B = src_BxS.shape[0]
+        T = tgt_BxTxC.shape[1]
 
         # --- Encoder Pass ---
         encoder_out = self.encoder(
@@ -875,8 +878,28 @@ class DiaModel(nn.Module):
             attn_mask=enc_self_attn_mask,
         )
 
+        # --- Create KV Caches for training ---
+        # Precompute cross-attention KV from encoder output
+        cross_attention_cache = self.decoder.precompute_cross_attention_kv(
+            max_len=T,
+            encoder_out=encoder_out,
+            src_positions=src_positions,
+        )
+        
+        # Create empty self-attention caches
+        self_attention_cache = []
+        for _ in range(self.decoder.num_layers):
+            self_attention_cache.append(
+                KVCache(
+                    self.config.model.decoder.gqa_query_heads,
+                    T,
+                    self.config.model.decoder.gqa_head_dim,
+                    device,
+                )
+            )
+
         # --- Decoder Pass ---
-        logits, _ = self.decoder(
+        logits = self.decoder(
             tgt_ids_BxTxC=tgt_BxTxC,
             encoder_out=encoder_out,
             tgt_positions=tgt_positions,
@@ -884,7 +907,8 @@ class DiaModel(nn.Module):
             deterministic=deterministic,
             self_attn_mask=dec_self_attn_mask,
             cross_attn_mask=dec_cross_attn_mask,
-            precomputed_cross_attn_kv=None,
+            self_attention_cache=self_attention_cache,
+            cross_attention_cache=cross_attention_cache,
         )
 
         return logits
