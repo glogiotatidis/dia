@@ -171,22 +171,34 @@ class GreekTrainer:
         except Exception as e:
             raise RuntimeError(f"Failed to load DAC model: {e}")
         
-        # Initialize optimizer
+        # Initialize optimizer with epsilon for numerical stability
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=lr,
             weight_decay=0.01,
+            eps=1e-8,  # Numerical stability
         )
         
-        # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=epochs * len(self.dataloader),
-            eta_min=lr * 0.1,
-        )
+        # Learning rate scheduler with warmup
+        total_steps = epochs * len(self.dataloader)
+        warmup_steps = min(500, total_steps // 10)  # 10% warmup or 500 steps
+        
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return step / warmup_steps  # Linear warmup
+            return 0.5 * (1 + torch.cos(torch.tensor((step - warmup_steps) / (total_steps - warmup_steps) * 3.14159)).item())
+        
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+        
+        # GradScaler for mixed precision (critical for preventing NaN!)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=(self.device == "cuda"))
         
         # Loss function - cross entropy for token prediction
         self.criterion = nn.CrossEntropyLoss(ignore_index=self.config.data.audio_pad_value)
+        
+        # NaN tracking
+        self.nan_count = 0
+        self.max_nan_batches = 10  # Stop training if too many NaN batches
     
     def encode_audio_to_codes(self, waveforms: torch.Tensor) -> torch.Tensor:
         """Encode waveforms to DAC codes.
@@ -225,7 +237,7 @@ class GreekTrainer:
         return codes
     
     def train_epoch(self, epoch: int) -> float:
-        """Train for one epoch with gradient accumulation."""
+        """Train for one epoch with gradient accumulation and NaN protection."""
         self.model.train()
         total_loss = 0.0
         num_batches = 0
@@ -270,7 +282,7 @@ class GreekTrainer:
                 tgt_positions = tgt_positions[:, :-1]
                 dec_self_attn_mask = dec_self_attn_mask[:, :, :-1, :-1]
                 
-                # Forward with mixed precision
+                # Forward with mixed precision and GradScaler
                 with torch.cuda.amp.autocast(enabled=self.device == "cuda"):
                     logits = self.model(
                         src_BxS=text_tokens,
@@ -292,13 +304,53 @@ class GreekTrainer:
                     loss = self.criterion(logits_flat, targets_flat)
                     loss = loss / self.grad_accum  # Scale for accumulation
                 
-                # Backward
-                loss.backward()
+                # Check for NaN loss BEFORE backward
+                if torch.isnan(loss) or torch.isinf(loss):
+                    self.nan_count += 1
+                    print(f"\n⚠️ NaN/Inf loss detected in batch {batch_idx} (count: {self.nan_count}/{self.max_nan_batches})")
+                    
+                    if self.nan_count >= self.max_nan_batches:
+                        print("❌ Too many NaN batches! Stopping training.")
+                        print("   Try: lower learning rate, check data quality, or reduce batch size")
+                        raise RuntimeError("Training diverged with too many NaN losses")
+                    
+                    # Skip this batch and reset gradients
+                    self.optimizer.zero_grad()
+                    if self.device == "cuda":
+                        torch.cuda.empty_cache()
+                    continue
+                
+                # Backward with scaler (handles FP16 scaling)
+                self.scaler.scale(loss).backward()
                 
                 # Update weights every grad_accum steps
                 if (batch_idx + 1) % self.grad_accum == 0:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    self.optimizer.step()
+                    # Unscale gradients before clipping
+                    self.scaler.unscale_(self.optimizer)
+                    
+                    # Check for NaN gradients
+                    has_nan_grad = False
+                    for name, param in self.model.named_parameters():
+                        if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                            has_nan_grad = True
+                            break
+                    
+                    if has_nan_grad:
+                        self.nan_count += 1
+                        print(f"\n⚠️ NaN gradients detected (count: {self.nan_count}/{self.max_nan_batches})")
+                        self.optimizer.zero_grad()
+                        
+                        if self.nan_count >= self.max_nan_batches:
+                            print("❌ Too many NaN gradient batches! Stopping training.")
+                            raise RuntimeError("Training diverged with NaN gradients")
+                        continue
+                    
+                    # Gradient clipping (important for stability!)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    # Step with scaler (skips update if gradients are inf)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
                 
@@ -319,15 +371,34 @@ class GreekTrainer:
                 torch.cuda.empty_cache()
                 self.optimizer.zero_grad()
                 continue
+            except RuntimeError as e:
+                if "NaN" in str(e) or "diverged" in str(e):
+                    raise  # Re-raise NaN errors
+                print(f"\n⚠️ Error in batch {batch_idx}: {e}")
+                continue
             except Exception as e:
                 print(f"\n⚠️ Error in batch {batch_idx}: {e}")
                 continue
         
-        return total_loss / max(num_batches, 1)
+        avg_loss = total_loss / max(num_batches, 1)
+        
+        # Check if epoch average loss is NaN
+        if num_batches == 0 or avg_loss != avg_loss:  # NaN check
+            print(f"⚠️ Epoch {epoch+1} had no valid batches or NaN average loss!")
+            return float('nan')
+        
+        return avg_loss
     
     def save_checkpoint(self, epoch: int, loss: float):
-        """Save model checkpoint."""
-        checkpoint_path = self.output_dir / f"greek_epoch{epoch:03d}_loss{loss:.4f}.pt"
+        """Save model checkpoint (only if loss is valid)."""
+        # Don't save checkpoints with NaN loss
+        if loss != loss or loss == float('inf'):  # NaN check
+            print(f"⚠️ Skipping checkpoint save - loss is NaN/Inf")
+            return
+        
+        # Use descriptive filename
+        loss_str = f"{loss:.4f}".replace(".", "p")  # e.g., 2p3456
+        checkpoint_path = self.output_dir / f"greek_epoch{epoch:03d}_loss{loss_str}.pt"
         torch.save(self.model.state_dict(), checkpoint_path)
         print(f"💾 Saved checkpoint: {checkpoint_path}")
         
@@ -340,24 +411,49 @@ class GreekTrainer:
         self.config.save(str(config_path))
     
     def train(self):
-        """Main training loop."""
+        """Main training loop with NaN protection."""
         print("\n" + "="*50)
         print("🚀 Starting Greek TTS Training")
         print("="*50 + "\n")
         
         best_loss = float("inf")
+        nan_epochs = 0
+        max_nan_epochs = 3  # Stop if 3 consecutive epochs have NaN
         
         for epoch in range(self.epochs):
-            epoch_loss = self.train_epoch(epoch)
+            try:
+                epoch_loss = self.train_epoch(epoch)
+            except RuntimeError as e:
+                if "diverged" in str(e) or "NaN" in str(e):
+                    print(f"\n❌ Training stopped due to: {e}")
+                    break
+                raise
             
             print(f"\n📊 Epoch {epoch+1}/{self.epochs}")
+            
+            # Check for NaN epoch loss
+            if epoch_loss != epoch_loss:  # NaN check
+                nan_epochs += 1
+                print(f"   ⚠️ Epoch loss is NaN! (consecutive: {nan_epochs}/{max_nan_epochs})")
+                
+                if nan_epochs >= max_nan_epochs:
+                    print(f"\n❌ Training stopped: {max_nan_epochs} consecutive NaN epochs")
+                    print("   Suggestions:")
+                    print("   - Lower learning rate (try --lr 1e-6)")
+                    print("   - Check dataset for corrupt audio files")
+                    print("   - Reduce max_audio_len")
+                    break
+                continue
+            else:
+                nan_epochs = 0  # Reset counter on valid epoch
+            
             print(f"   Average Loss: {epoch_loss:.4f}")
             
-            # Save checkpoint every 5 epochs
+            # Save checkpoint every 5 epochs (only valid losses)
             if (epoch + 1) % 5 == 0:
                 self.save_checkpoint(epoch + 1, epoch_loss)
             
-            # Track best model
+            # Track best model (only if loss improved)
             if epoch_loss < best_loss:
                 best_loss = epoch_loss
                 best_path = self.output_dir / "greek_best.pt"
@@ -365,9 +461,13 @@ class GreekTrainer:
                 print(f"   ⭐ New best model saved!")
         
         print("\n" + "="*50)
-        print("✅ Training Complete!")
-        print(f"   Best Loss: {best_loss:.4f}")
-        print(f"   Checkpoints: {self.output_dir}")
+        if best_loss == float("inf"):
+            print("❌ Training Failed - No valid checkpoints saved")
+            print("   All epochs had NaN loss. Check your data and hyperparameters.")
+        else:
+            print("✅ Training Complete!")
+            print(f"   Best Loss: {best_loss:.4f}")
+            print(f"   Checkpoints: {self.output_dir}")
         print("="*50)
 
 

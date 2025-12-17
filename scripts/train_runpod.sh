@@ -9,10 +9,18 @@
 #   bash train_runpod.sh --a4000      # Force A4000/16GB settings
 #   bash train_runpod.sh --a100       # Force A100/40GB settings
 #   bash train_runpod.sh --a100 --full  # A100 full training
+#   bash train_runpod.sh --lr 1e-6    # Use custom learning rate (for NaN issues)
 #
 # GPU PROFILES:
-#   A4000/T4 (16GB): Frozen encoder, batch=1, max_audio=5s
-#   A100 (40GB+):    Full model, batch=2, max_audio=10s
+#   A4000/T4 (16GB): Frozen encoder, batch=1, max_audio=5s, lr=1e-5
+#   A100 (40GB+):    Full model, batch=2, max_audio=10s, lr=5e-6
+#
+# NaN PREVENTION:
+#   - GradScaler for mixed precision stability
+#   - Gradient clipping (max_norm=1.0)
+#   - Learning rate warmup (10% of steps or 500 steps)
+#   - NaN detection and early stopping
+#   - Automatic checkpoint skipping on bad epochs
 #
 # =============================================================================
 
@@ -22,6 +30,7 @@
 # Parse arguments
 FULL_TRAINING=false
 GPU_PROFILE="auto"
+CUSTOM_LR=""
 
 for arg in "$@"; do
     case $arg in
@@ -33,6 +42,16 @@ for arg in "$@"; do
             ;;
         --a100|--4090|--40gb|--high)
             GPU_PROFILE="high"
+            ;;
+        --lr)
+            # Next argument will be the learning rate
+            NEXT_IS_LR=true
+            ;;
+        *)
+            if [ "$NEXT_IS_LR" = true ]; then
+                CUSTOM_LR="$arg"
+                NEXT_IS_LR=false
+            fi
             ;;
     esac
 done
@@ -57,6 +76,8 @@ if [ "$GPU_PROFILE" == "high" ]; then
     MAX_AUDIO_LEN=10.0
     FREEZE_ENCODER=""  # Don't freeze, train full model
     GPU_NAME="A100/40GB+"
+    # Slightly higher LR for full model training
+    DEFAULT_LR="5e-6"
 else
     # A4000 / T4 / 16GB settings
     BATCH_SIZE=1
@@ -64,6 +85,16 @@ else
     MAX_AUDIO_LEN=5.0
     FREEZE_ENCODER="--freeze_encoder"
     GPU_NAME="A4000/16GB"
+    # Lower LR for stability with frozen encoder
+    DEFAULT_LR="1e-5"
+fi
+
+# Use custom LR if provided, otherwise use default
+if [ -n "$CUSTOM_LR" ]; then
+    LEARNING_RATE="$CUSTOM_LR"
+    echo "📝 Using custom learning rate: $LEARNING_RATE"
+else
+    LEARNING_RATE="$DEFAULT_LR"
 fi
 
 # Set epochs based on training mode
@@ -206,6 +237,7 @@ fi
 echo ""
 echo "🏋️ Training Configuration:"
 echo "   Epochs: $EPOCHS"
+echo "   Learning Rate: $LEARNING_RATE"
 echo "   Estimated time: $EST_TIME"
 echo ""
 echo "   Monitor with: tail -f $CHECKPOINT_DIR/training.log"
@@ -214,8 +246,13 @@ echo ""
 # Clear GPU memory before starting
 python -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
 
+# Set environment variables for stability
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_LAUNCH_BLOCKING=0
+
 echo ""
 echo "🚀 Starting training..."
+echo "   (NaN detection enabled - training will stop if loss diverges)"
 echo ""
 
 # Start training (exit on failure)
@@ -227,15 +264,30 @@ python $REPO_DIR/scripts/train_greek.py \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
     --grad_accum $GRAD_ACCUM \
-    --lr 1e-5 \
+    --lr $LEARNING_RATE \
     --max_audio_len $MAX_AUDIO_LEN \
     $FREEZE_ENCODER \
     2>&1 | tee $CHECKPOINT_DIR/training.log
 
-echo ""
-echo "=============================================="
-echo "✅ Training Complete!"
-echo "=============================================="
+# Check if training succeeded (look for best checkpoint)
+if [ -f "$CHECKPOINT_DIR/greek_best.pt" ]; then
+    echo ""
+    echo "=============================================="
+    echo "✅ Training Complete!"
+    echo "=============================================="
+else
+    echo ""
+    echo "=============================================="
+    echo "⚠️  Training may have failed - no best checkpoint found"
+    echo "=============================================="
+    echo "Check the log for errors: $CHECKPOINT_DIR/training.log"
+    echo ""
+    echo "Common issues:"
+    echo "  - NaN loss: Try lower learning rate (--lr 1e-6)"
+    echo "  - OOM: Reduce batch size or max_audio_len"
+    echo "  - Bad audio files: Check dataset for corrupt files"
+fi
+
 echo "Checkpoints saved to: $CHECKPOINT_DIR"
 echo ""
 echo "To download your model:"
