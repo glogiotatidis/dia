@@ -37,7 +37,7 @@ if [ "$FULL_TRAINING" == "true" ]; then
     echo "🚀 Greek TTS FULL Training (RunPod)"
     echo "=============================================="
     EPOCHS=50
-    BATCH_SIZE=32
+    BATCH_SIZE=4  # Reduced for DAC + full model memory
     MAX_SAMPLES=""
 else
     echo "=============================================="
@@ -45,7 +45,7 @@ else
     echo "   Run with --full for complete training"
     echo "=============================================="
     EPOCHS=5
-    BATCH_SIZE=16
+    BATCH_SIZE=2  # Small batch for testing
     MAX_SAMPLES="--max_samples 500"
 fi
 
@@ -92,6 +92,7 @@ fi
 
 # Install other dependencies (pip will skip if already satisfied)
 pip install -q huggingface_hub speechbrain tqdm einops soundfile librosa pydantic 'datasets>=2.14.0,<3.0.0'
+pip install -q descript-audio-codec
 echo "✅ Python packages ready"
 
 # Clone repo
