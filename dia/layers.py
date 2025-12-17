@@ -4,9 +4,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.nn import RMSNorm
 
 from .config import DiaConfig
+
+# RMSNorm fallback for PyTorch < 2.4
+try:
+    from torch.nn import RMSNorm
+except ImportError:
+    class RMSNorm(nn.Module):
+        """RMSNorm implementation for older PyTorch versions."""
+        def __init__(self, normalized_shape, eps=1e-5, dtype=None):
+            super().__init__()
+            if isinstance(normalized_shape, int):
+                normalized_shape = (normalized_shape,)
+            self.normalized_shape = normalized_shape
+            self.eps = eps
+            self.weight = nn.Parameter(torch.ones(normalized_shape, dtype=dtype))
+        
+        def forward(self, x):
+            rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
+            return (x / rms) * self.weight
 
 
 def _normalize_axes(axes: tuple[int, ...], ndim: int) -> tuple[int, ...]:
