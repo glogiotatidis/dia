@@ -37,7 +37,7 @@ if [ "$FULL_TRAINING" == "true" ]; then
     echo "🚀 Greek TTS FULL Training (RunPod)"
     echo "=============================================="
     EPOCHS=50
-    BATCH_SIZE=4  # Reduced for DAC + full model memory
+    BATCH_SIZE=1  # Dia-1.6B is large, use batch=1
     MAX_SAMPLES=""
 else
     echo "=============================================="
@@ -45,7 +45,7 @@ else
     echo "   Run with --full for complete training"
     echo "=============================================="
     EPOCHS=5
-    BATCH_SIZE=2  # Small batch for testing
+    BATCH_SIZE=1  # Dia-1.6B is large, use batch=1
     MAX_SAMPLES="--max_samples 500"
 fi
 
@@ -180,7 +180,9 @@ python $REPO_DIR/scripts/train_greek.py \
     --from_hf \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
-    --lr 1e-5 2>&1 | tee $CHECKPOINT_DIR/training.log
+    --grad_accum 8 \
+    --lr 1e-5 \
+    --max_audio_len 8.0 2>&1 | tee $CHECKPOINT_DIR/training.log
 
 echo ""
 echo "=============================================="

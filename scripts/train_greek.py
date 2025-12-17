@@ -80,19 +80,24 @@ class GreekTrainer:
         from_hf: bool = False,
         config: DiaConfig = None,
         device: str = None,
-        batch_size: int = 4,
-        lr: float = 1e-4,
+        batch_size: int = 1,
+        grad_accum: int = 8,
+        lr: float = 1e-5,
         epochs: int = 50,
+        max_audio_len: float = 10.0,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.epochs = epochs
         self.batch_size = batch_size
+        self.grad_accum = grad_accum
         self.lr = lr
+        self.max_audio_len = max_audio_len
         
         print(f"🔧 Device: {self.device}")
         print(f"📁 Output: {self.output_dir}")
+        print(f"📊 Batch size: {batch_size} x {grad_accum} grad accum = {batch_size * grad_accum} effective")
         
         # Load pretrained from HuggingFace (recommended)
         if from_hf:
@@ -118,7 +123,7 @@ class GreekTrainer:
         
         # Initialize dataset with empty lang_vocab (we use byte encoding)
         print("📚 Loading dataset...")
-        self.dataset = MultilangTTSDataset(manifest_path, lang_vocab={})
+        self.dataset = MultilangTTSDataset(manifest_path, lang_vocab={}, max_audio_len=max_audio_len)
         self.dataloader = DataLoader(
             self.dataset,
             batch_size=batch_size,
@@ -206,12 +211,13 @@ class GreekTrainer:
         return codes
     
     def train_epoch(self, epoch: int) -> float:
-        """Train for one epoch."""
+        """Train for one epoch with gradient accumulation."""
         self.model.train()
         total_loss = 0.0
         num_batches = 0
         
         pbar = tqdm(self.dataloader, desc=f"Epoch {epoch+1}")
+        self.optimizer.zero_grad()
         
         for batch_idx, batch in enumerate(pbar):
             try:
@@ -250,42 +256,55 @@ class GreekTrainer:
                 tgt_positions = tgt_positions[:, :-1]
                 dec_self_attn_mask = dec_self_attn_mask[:, :, :-1, :-1]
                 
-                # Forward
-                self.optimizer.zero_grad()
-                
-                logits = self.model(
-                    src_BxS=text_tokens,
-                    tgt_BxTxC=tgt_input,
-                    src_positions=src_positions,
-                    tgt_positions=tgt_positions,
-                    enc_self_attn_mask=enc_self_attn_mask,
-                    dec_self_attn_mask=dec_self_attn_mask,
-                    dec_cross_attn_mask=dec_cross_attn_mask,
-                    enable_dropout=True,
-                )
-                # logits: (B, T-1, C, V)
-                
-                # Compute loss across all channels
-                B, T_out, C, V = logits.shape
-                logits_flat = logits.reshape(-1, V)  # (B*T*C, V)
-                targets_flat = tgt_target.reshape(-1).long()  # (B*T*C,)
-                
-                loss = self.criterion(logits_flat, targets_flat)
+                # Forward with mixed precision
+                with torch.cuda.amp.autocast(enabled=self.device == "cuda"):
+                    logits = self.model(
+                        src_BxS=text_tokens,
+                        tgt_BxTxC=tgt_input,
+                        src_positions=src_positions,
+                        tgt_positions=tgt_positions,
+                        enc_self_attn_mask=enc_self_attn_mask,
+                        dec_self_attn_mask=dec_self_attn_mask,
+                        dec_cross_attn_mask=dec_cross_attn_mask,
+                        enable_dropout=True,
+                    )
+                    # logits: (B, T-1, C, V)
+                    
+                    # Compute loss across all channels
+                    B, T_out, C, V = logits.shape
+                    logits_flat = logits.reshape(-1, V)  # (B*T*C, V)
+                    targets_flat = tgt_target.reshape(-1).long()  # (B*T*C,)
+                    
+                    loss = self.criterion(logits_flat, targets_flat)
+                    loss = loss / self.grad_accum  # Scale for accumulation
                 
                 # Backward
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                self.optimizer.step()
-                self.scheduler.step()
                 
-                total_loss += loss.item()
+                # Update weights every grad_accum steps
+                if (batch_idx + 1) % self.grad_accum == 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+                
+                total_loss += loss.item() * self.grad_accum  # Unscale for logging
                 num_batches += 1
                 
+                # Clear cache periodically
+                if batch_idx % 10 == 0 and self.device == "cuda":
+                    torch.cuda.empty_cache()
+                
                 pbar.set_postfix({
-                    "loss": f"{loss.item():.4f}",
+                    "loss": f"{loss.item() * self.grad_accum:.4f}",
                     "lr": f"{self.scheduler.get_last_lr()[0]:.2e}"
                 })
                 
+            except torch.cuda.OutOfMemoryError:
+                print(f"\n⚠️ OOM in batch {batch_idx}, skipping...")
+                torch.cuda.empty_cache()
+                self.optimizer.zero_grad()
+                continue
             except Exception as e:
                 print(f"\n⚠️ Error in batch {batch_idx}: {e}")
                 continue
@@ -350,12 +369,16 @@ def main():
                         help="Start from pretrained Dia-1.6B from HuggingFace (recommended)")
     parser.add_argument("--epochs", type=int, default=50,
                         help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=4,
-                        help="Batch size (reduced for memory)")
-    parser.add_argument("--lr", type=float, default=1e-4,
-                        help="Learning rate")
+    parser.add_argument("--batch_size", type=int, default=1,
+                        help="Batch size (use 1 for 16GB GPU)")
+    parser.add_argument("--grad_accum", type=int, default=8,
+                        help="Gradient accumulation steps (effective batch = batch_size * grad_accum)")
+    parser.add_argument("--lr", type=float, default=1e-5,
+                        help="Learning rate (lower for fine-tuning)")
     parser.add_argument("--device", type=str, default=None,
                         help="Device (cuda/cpu)")
+    parser.add_argument("--max_audio_len", type=float, default=10.0,
+                        help="Max audio length in seconds (reduce for memory)")
     
     args = parser.parse_args()
     
@@ -366,9 +389,11 @@ def main():
         pretrained_path=args.pretrained,
         from_hf=args.from_hf,
         batch_size=args.batch_size,
+        grad_accum=args.grad_accum,
         lr=args.lr,
         epochs=args.epochs,
         device=args.device,
+        max_audio_len=args.max_audio_len,
     )
     
     # Start training
