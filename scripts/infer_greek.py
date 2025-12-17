@@ -72,8 +72,10 @@ def main():
                         help="Path to config.json (optional, will use default if not provided)")
     parser.add_argument("--pretrained", action="store_true",
                         help="Use pretrained Dia model from HuggingFace")
-    parser.add_argument("--text", type=str, required=True,
+    parser.add_argument("--text", type=str, default=None,
                         help="Text to synthesize (Greek or English)")
+    parser.add_argument("--text_file", type=str, default=None,
+                        help="Path to text file to read input from")
     parser.add_argument("--output", type=str, default="output.wav",
                         help="Output audio file path")
     parser.add_argument("--device", type=str, default=None,
@@ -137,8 +139,18 @@ def main():
         # Load DAC model
         dia._load_dac_model()
     
+    # Get text from argument or file
+    if args.text:
+        text = args.text
+    elif args.text_file:
+        with open(args.text_file, 'r', encoding='utf-8') as f:
+            text = f.read().strip()
+        print(f"📄 Read text from: {args.text_file}")
+    else:
+        print("❌ Error: Either --text or --text_file must be provided")
+        sys.exit(1)
+    
     # Format text with speaker marker if not present
-    text = args.text
     if "[S1]" not in text and "[S2]" not in text:
         text = f"[S1] {text}"
     
