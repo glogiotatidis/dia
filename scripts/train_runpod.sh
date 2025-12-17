@@ -4,23 +4,15 @@
 # =============================================================================
 #
 # USAGE:
-#   bash train_runpod.sh          # Quick test run (5 epochs, small batch)
-#   bash train_runpod.sh --full   # Full training (50 epochs, uses CommonVoice if available)
+#   bash train_runpod.sh              # Auto-detect GPU, quick test (5 epochs)
+#   bash train_runpod.sh --full       # Auto-detect GPU, full training (50 epochs)
+#   bash train_runpod.sh --a4000      # Force A4000/16GB settings
+#   bash train_runpod.sh --a100       # Force A100/40GB settings
+#   bash train_runpod.sh --a100 --full  # A100 full training
 #
-# SETUP INSTRUCTIONS:
-#
-# 1. Create account at https://runpod.io
-# 2. Add credits ($20-50 recommended for testing)
-# 3. Deploy a GPU Pod:
-#    - Template: RunPod Pytorch 2.1
-#    - GPU: RTX A4000 ($0.20/hr) for testing, A100 ($1.50/hr) for full training
-#    - Disk: 50GB minimum
-#
-# 4. Upload your pre-prepared data:
-#    - Quick test: Upload greek_data.tar.gz (Fleurs, ~1GB)
-#    - Full train: Also upload mvc-scripted-el-v24.0.tar.gz (CommonVoice)
-#
-# 5. Connect via SSH or Web Terminal and run this script
+# GPU PROFILES:
+#   A4000/T4 (16GB): Frozen encoder, batch=1, max_audio=5s
+#   A100 (40GB+):    Full model, batch=2, max_audio=10s
 #
 # =============================================================================
 
@@ -28,26 +20,71 @@ set -e
 
 # Parse arguments
 FULL_TRAINING=false
-if [ "$1" == "--full" ]; then
-    FULL_TRAINING=true
+GPU_PROFILE="auto"
+
+for arg in "$@"; do
+    case $arg in
+        --full)
+            FULL_TRAINING=true
+            ;;
+        --a4000|--t4|--16gb)
+            GPU_PROFILE="low"
+            ;;
+        --a100|--4090|--40gb|--high)
+            GPU_PROFILE="high"
+            ;;
+    esac
+done
+
+# Auto-detect GPU if not specified
+if [ "$GPU_PROFILE" == "auto" ]; then
+    GPU_MEM=$(python -c "import torch; print(torch.cuda.get_device_properties(0).total_memory // (1024**3))" 2>/dev/null || echo "0")
+    if [ "$GPU_MEM" -ge 30 ]; then
+        GPU_PROFILE="high"
+        echo "🔍 Detected ${GPU_MEM}GB GPU → Using A100/high-memory settings"
+    else
+        GPU_PROFILE="low"
+        echo "🔍 Detected ${GPU_MEM}GB GPU → Using A4000/low-memory settings"
+    fi
 fi
 
-if [ "$FULL_TRAINING" == "true" ]; then
-    echo "=============================================="
-    echo "🚀 Greek TTS FULL Training (RunPod)"
-    echo "=============================================="
-    EPOCHS=50
-    BATCH_SIZE=1  # Dia-1.6B is large, use batch=1
-    MAX_SAMPLES=""
+# Set GPU-specific parameters
+if [ "$GPU_PROFILE" == "high" ]; then
+    # A100 / RTX 4090 / 40GB+ settings
+    BATCH_SIZE=2
+    GRAD_ACCUM=4
+    MAX_AUDIO_LEN=10.0
+    FREEZE_ENCODER=""  # Don't freeze, train full model
+    GPU_NAME="A100/40GB+"
 else
-    echo "=============================================="
-    echo "🧪 Greek TTS Quick Test (RunPod)"
-    echo "   Run with --full for complete training"
-    echo "=============================================="
-    EPOCHS=5
-    BATCH_SIZE=1  # Dia-1.6B is large, use batch=1
-    MAX_SAMPLES="--max_samples 500"
+    # A4000 / T4 / 16GB settings
+    BATCH_SIZE=1
+    GRAD_ACCUM=4
+    MAX_AUDIO_LEN=5.0
+    FREEZE_ENCODER="--freeze_encoder"
+    GPU_NAME="A4000/16GB"
 fi
+
+# Set epochs based on training mode
+if [ "$FULL_TRAINING" == "true" ]; then
+    EPOCHS=50
+    MODE_NAME="FULL"
+else
+    EPOCHS=5
+    MODE_NAME="Quick Test"
+fi
+
+echo "=============================================="
+echo "🚀 Greek TTS Training (RunPod)"
+echo "=============================================="
+echo "   GPU Profile: $GPU_NAME"
+echo "   Mode: $MODE_NAME ($EPOCHS epochs)"
+echo "   Batch: $BATCH_SIZE x $GRAD_ACCUM accum = $(($BATCH_SIZE * $GRAD_ACCUM)) effective"
+echo "   Max audio: ${MAX_AUDIO_LEN}s"
+[ -n "$FREEZE_ENCODER" ] && echo "   Encoder: FROZEN (decoder only)"
+[ -z "$FREEZE_ENCODER" ] && echo "   Encoder: TRAINABLE (full model)"
+echo "=============================================="
+echo ""
 
 # Install system dependencies
 echo "📦 Installing system packages..."
@@ -102,6 +139,7 @@ if [ ! -d "$REPO_DIR" ]; then
     git clone https://github.com/glogiotatidis/dia.git $REPO_DIR
 fi
 cd $REPO_DIR
+git pull  # Get latest changes
 echo "📂 Working directory: $(pwd)"
 
 # Setup directories
@@ -132,9 +170,6 @@ if [ "$FULL_TRAINING" == "true" ] && [ -f "/workspace/mvc-scripted-el-v24.0.tar.
     mkdir -p $DATA_DIR/commonvoice
     tar -xzf /workspace/mvc-scripted-el-v24.0.tar.gz -C $DATA_DIR/commonvoice
     echo "✅ CommonVoice data extracted"
-    
-    # TODO: Process CommonVoice and merge manifests if needed
-    # For now, we use Fleurs manifest
 fi
 
 # Check for manifest
@@ -156,37 +191,44 @@ fi
 N_SAMPLES=$(python -c "import json; print(len(json.load(open('$DATA_DIR/manifests/train_manifest_el.json'))))")
 echo "✅ Found $N_SAMPLES training samples"
 
-# Training configuration
+# Estimate training time
+if [ "$GPU_PROFILE" == "high" ]; then
+    if [ "$FULL_TRAINING" == "true" ]; then
+        EST_TIME="4-6 hours"
+    else
+        EST_TIME="20-30 minutes"
+    fi
+else
+    if [ "$FULL_TRAINING" == "true" ]; then
+        EST_TIME="8-12 hours"
+    else
+        EST_TIME="1-2 hours"
+    fi
+fi
+
 echo ""
 echo "🏋️ Training Configuration:"
 echo "   Epochs: $EPOCHS"
-echo "   Batch size: $BATCH_SIZE"
-if [ "$FULL_TRAINING" == "true" ]; then
-    echo "   Mode: Full training"
-    echo "   Estimated time: ~8-12 hours on A100"
-else
-    echo "   Mode: Quick test"
-    echo "   Estimated time: ~30-60 minutes"
-fi
+echo "   Estimated time: $EST_TIME"
 echo ""
-echo "   Monitor with: tail -f training.log"
+echo "   Monitor with: tail -f $CHECKPOINT_DIR/training.log"
 echo ""
 
-# Start training
 # Clear GPU memory before starting
 python -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
 
-# Fine-tune from pretrained Dia-1.6B (recommended)
-# Encoder frozen, only decoder trained to fit in 16GB
+# Start training
 python $REPO_DIR/scripts/train_greek.py \
     --manifest $DATA_DIR/manifests/train_manifest_el.json \
     --output_dir $CHECKPOINT_DIR \
     --from_hf \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
-    --grad_accum 4 \
+    --grad_accum $GRAD_ACCUM \
     --lr 1e-5 \
-    --max_audio_len 5.0 2>&1 | tee $CHECKPOINT_DIR/training.log
+    --max_audio_len $MAX_AUDIO_LEN \
+    $FREEZE_ENCODER \
+    2>&1 | tee $CHECKPOINT_DIR/training.log
 
 echo ""
 echo "=============================================="
@@ -195,10 +237,14 @@ echo "=============================================="
 echo "Checkpoints saved to: $CHECKPOINT_DIR"
 echo ""
 echo "To download your model:"
-echo "  runpodctl send $CHECKPOINT_DIR/greek_best.pt"
+echo "  runpodctl receive"
+echo "  # or: scp user@pod:/workspace/checkpoints/greek/greek_best.pt ."
+echo ""
+echo "To test your model:"
+echo "  python scripts/infer_greek.py --checkpoint $CHECKPOINT_DIR/greek_best.pt --text 'Γεια σου κόσμε'"
 echo ""
 if [ "$FULL_TRAINING" == "false" ]; then
     echo "This was a quick test. For full training, run:"
-    echo "  bash train_runpod.sh --full"
+    echo "  bash scripts/train_runpod.sh --full"
     echo ""
 fi

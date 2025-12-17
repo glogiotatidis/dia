@@ -85,6 +85,7 @@ class GreekTrainer:
         lr: float = 1e-5,
         epochs: int = 50,
         max_audio_len: float = 10.0,
+        freeze_encoder: bool = False,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.output_dir = Path(output_dir)
@@ -145,11 +146,13 @@ class GreekTrainer:
             self.model.load_state_dict(state_dict, strict=False)
             print(f"   ✅ Loaded weights from {pretrained_path}")
         
-        # Freeze encoder to save memory (only train decoder)
-        if self.device == "cuda":
-            print("🧊 Freezing encoder to save memory (training decoder only)...")
+        # Optionally freeze encoder to save memory
+        if freeze_encoder:
+            print("🧊 Freezing encoder (training decoder only)...")
             for param in self.model.encoder.parameters():
                 param.requires_grad = False
+        else:
+            print("🔥 Training full model (encoder + decoder)")
         
         self.model = self.model.to(self.device)
         
@@ -390,6 +393,8 @@ def main():
                         help="Device (cuda/cpu)")
     parser.add_argument("--max_audio_len", type=float, default=10.0,
                         help="Max audio length in seconds (reduce for memory)")
+    parser.add_argument("--freeze_encoder", action="store_true",
+                        help="Freeze encoder, only train decoder (saves memory)")
     
     args = parser.parse_args()
     
@@ -405,6 +410,7 @@ def main():
         epochs=args.epochs,
         device=args.device,
         max_audio_len=args.max_audio_len,
+        freeze_encoder=args.freeze_encoder,
     )
     
     # Start training
