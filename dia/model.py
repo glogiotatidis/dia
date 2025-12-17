@@ -9,17 +9,29 @@ class DiaModel(nn.Module):
         super().__init__()
         self.config = config
 
-        model_dim = config.model.decoder.d_model
-        vocab_size = config.model.tgt_vocab_size
+        # Support both dict and attribute-based config
+        if isinstance(config, dict):
+            model_dim = config.get("decoder", {}).get("d_model", 512)
+            vocab_size = config.get("tgt_vocab_size", 1028)
+            encoder_vocab_size = config.get("encoder_vocab_size", 512)
+            input_dim = config.get("input_dim", 80)
+            diffusion_steps = config.get("diffusion_steps", 8)
+        else:
+            model_dim = config.model.decoder.d_model
+            vocab_size = config.model.tgt_vocab_size
+            encoder_vocab_size = config.model.encoder_vocab_size
+            input_dim = config.model.input_dim
+            diffusion_steps = config.model.diffusion_steps
+
         self.spk_proj = nn.Linear(192, model_dim)
 
         # Encoder: text + lang embedding
-        self.encoder_embed = nn.Embedding(config.model.encoder_vocab_size, model_dim)
+        self.encoder_embed = nn.Embedding(encoder_vocab_size, model_dim)
         self.encoder_proj = nn.Linear(model_dim, model_dim)
 
         # Diffusion decoder setup
-        self.token_proj = nn.Linear(config.model.input_dim, model_dim)
-        self.diffusion_steps = config.model.diffusion_steps
+        self.token_proj = nn.Linear(input_dim, model_dim)
+        self.diffusion_steps = diffusion_steps
         self.time_embed = nn.Embedding(self.diffusion_steps, model_dim)
 
         # Conditional U-Net style block
@@ -30,6 +42,7 @@ class DiaModel(nn.Module):
             nn.Linear(model_dim, model_dim)
         )
 
+        self.vocab_size = vocab_size
         self.to_logits = nn.Linear(model_dim, vocab_size)
 
     def encoder(self, input_ids, lang_ids):
