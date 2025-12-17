@@ -61,8 +61,14 @@ echo "✅ System packages installed"
 
 # Install Python dependencies
 echo "📦 Installing Python packages..."
-pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install -q transformers huggingface_hub speechbrain tqdm einops soundfile librosa pydantic
+# Uninstall any conflicting pre-installed packages
+pip uninstall -y torch torchvision torchaudio transformers 2>/dev/null || true
+# Install PyTorch with CUDA 11.8
+pip install -q torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
+# Install compatible transformers version
+pip install -q 'transformers>=4.35.0,<4.40.0'
+# Install other dependencies
+pip install -q huggingface_hub speechbrain tqdm einops soundfile librosa pydantic
 pip install -q 'datasets>=2.14.0,<3.0.0'
 echo "✅ Python packages installed"
 
