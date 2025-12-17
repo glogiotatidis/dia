@@ -173,16 +173,20 @@ echo "   Monitor with: tail -f training.log"
 echo ""
 
 # Start training
+# Clear GPU memory before starting
+python -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
+
 # Fine-tune from pretrained Dia-1.6B (recommended)
+# Encoder frozen, only decoder trained to fit in 16GB
 python $REPO_DIR/scripts/train_greek.py \
     --manifest $DATA_DIR/manifests/train_manifest_el.json \
     --output_dir $CHECKPOINT_DIR \
     --from_hf \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
-    --grad_accum 8 \
+    --grad_accum 4 \
     --lr 1e-5 \
-    --max_audio_len 8.0 2>&1 | tee $CHECKPOINT_DIR/training.log
+    --max_audio_len 5.0 2>&1 | tee $CHECKPOINT_DIR/training.log
 
 echo ""
 echo "=============================================="

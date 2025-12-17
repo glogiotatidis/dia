@@ -145,7 +145,18 @@ class GreekTrainer:
             self.model.load_state_dict(state_dict, strict=False)
             print(f"   ✅ Loaded weights from {pretrained_path}")
         
+        # Freeze encoder to save memory (only train decoder)
+        if self.device == "cuda":
+            print("🧊 Freezing encoder to save memory (training decoder only)...")
+            for param in self.model.encoder.parameters():
+                param.requires_grad = False
+        
         self.model = self.model.to(self.device)
+        
+        # Count trainable parameters
+        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.model.parameters())
+        print(f"   Trainable: {trainable/1e6:.1f}M / {total/1e6:.1f}M parameters")
         
         # Load DAC model for audio tokenization
         print("🎵 Loading DAC model...")
