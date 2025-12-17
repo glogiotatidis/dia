@@ -70,7 +70,7 @@ echo "✅ Python packages installed"
 REPO_DIR="/workspace/dia"
 if [ ! -d "$REPO_DIR" ]; then
     echo "📥 Cloning repository..."
-    git clone https://github.com/nari-labs/dia.git $REPO_DIR
+    git clone https://github.com/glogiotatidis/dia.git $REPO_DIR
 fi
 cd $REPO_DIR
 echo "📂 Working directory: $(pwd)"
