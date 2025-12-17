@@ -3,6 +3,10 @@
 # Greek TTS Training on RunPod
 # =============================================================================
 #
+# USAGE:
+#   bash train_runpod.sh          # Quick test run (5 epochs, small batch)
+#   bash train_runpod.sh --full   # Full training (50 epochs, uses CommonVoice if available)
+#
 # SETUP INSTRUCTIONS:
 #
 # 1. Create account at https://runpod.io
@@ -13,21 +17,37 @@
 #    - Disk: 50GB minimum
 #
 # 4. Upload your pre-prepared data:
-#    - Upload greek_data.tar.gz to /workspace/
-#    - Or use runpodctl: runpodctl send greek_data.tar.gz
+#    - Quick test: Upload greek_data.tar.gz (Fleurs, ~1GB)
+#    - Full train: Also upload mvc-scripted-el-v24.0.tar.gz (CommonVoice)
 #
-# 5. Connect via SSH or Web Terminal
-#
-# 6. Run this script:
-#    bash train_runpod.sh
+# 5. Connect via SSH or Web Terminal and run this script
 #
 # =============================================================================
 
 set -e
 
-echo "=============================================="
-echo "🚀 Greek TTS Training Setup (RunPod)"
-echo "=============================================="
+# Parse arguments
+FULL_TRAINING=false
+if [ "$1" == "--full" ]; then
+    FULL_TRAINING=true
+fi
+
+if [ "$FULL_TRAINING" == "true" ]; then
+    echo "=============================================="
+    echo "🚀 Greek TTS FULL Training (RunPod)"
+    echo "=============================================="
+    EPOCHS=50
+    BATCH_SIZE=32
+    MAX_SAMPLES=""
+else
+    echo "=============================================="
+    echo "🧪 Greek TTS Quick Test (RunPod)"
+    echo "   Run with --full for complete training"
+    echo "=============================================="
+    EPOCHS=5
+    BATCH_SIZE=16
+    MAX_SAMPLES="--max_samples 500"
+fi
 
 # Install system dependencies
 echo "📦 Installing system packages..."
@@ -53,24 +73,35 @@ if [ ! -d "dia" ]; then
 fi
 cd dia
 
-# Setup data directory
+# Setup directories
 DATA_DIR="/workspace/data/el"
 CHECKPOINT_DIR="/workspace/checkpoints/greek"
-mkdir -p $CHECKPOINT_DIR
+mkdir -p $CHECKPOINT_DIR $DATA_DIR
 
-# Check for pre-uploaded data
+# Extract Fleurs data (greek_data.tar.gz)
 if [ -f "/workspace/greek_data.tar.gz" ]; then
-    echo "📦 Extracting pre-uploaded data..."
-    mkdir -p /workspace/data
+    echo "📦 Extracting Fleurs data..."
     tar -xzf /workspace/greek_data.tar.gz -C /workspace/data
-    echo "✅ Data extracted to $DATA_DIR"
-elif [ -d "$DATA_DIR/manifests" ]; then
-    echo "✅ Data already exists at $DATA_DIR"
-else
-    echo "❌ No data found!"
+    echo "✅ Fleurs data extracted"
+fi
+
+# Extract CommonVoice data if available (for full training)
+if [ "$FULL_TRAINING" == "true" ] && [ -f "/workspace/mvc-scripted-el-v24.0.tar.gz" ]; then
+    echo "📦 Extracting CommonVoice data..."
+    mkdir -p $DATA_DIR/commonvoice
+    tar -xzf /workspace/mvc-scripted-el-v24.0.tar.gz -C $DATA_DIR/commonvoice
+    echo "✅ CommonVoice data extracted"
+    
+    # TODO: Process CommonVoice and merge manifests if needed
+    # For now, we use Fleurs manifest
+fi
+
+# Check for manifest
+if [ ! -f "$DATA_DIR/manifests/train_manifest_el.json" ]; then
+    echo "❌ Manifest not found at $DATA_DIR/manifests/train_manifest_el.json"
     echo ""
     echo "Please upload your data first:"
-    echo "  1. On your local machine, prepare data:"
+    echo "  1. On your local machine:"
     echo "     python scripts/download_greek_datasets.py --output_dir data/el"
     echo "     tar -czvf greek_data.tar.gz -C data el"
     echo ""
@@ -81,28 +112,32 @@ else
     exit 1
 fi
 
-# Verify data
-if [ ! -f "$DATA_DIR/manifests/train_manifest_el.json" ]; then
-    echo "❌ Manifest not found at $DATA_DIR/manifests/train_manifest_el.json"
-    exit 1
-fi
-
 N_SAMPLES=$(python -c "import json; print(len(json.load(open('$DATA_DIR/manifests/train_manifest_el.json'))))")
 echo "✅ Found $N_SAMPLES training samples"
 
-# Start training
+# Training configuration
 echo ""
-echo "🏋️ Starting training..."
-echo "   This will take ~8-12 hours on A100"
+echo "🏋️ Training Configuration:"
+echo "   Epochs: $EPOCHS"
+echo "   Batch size: $BATCH_SIZE"
+if [ "$FULL_TRAINING" == "true" ]; then
+    echo "   Mode: Full training"
+    echo "   Estimated time: ~8-12 hours on A100"
+else
+    echo "   Mode: Quick test"
+    echo "   Estimated time: ~30-60 minutes"
+fi
+echo ""
 echo "   Monitor with: tail -f training.log"
 echo ""
 
+# Start training
 python scripts/train_greek.py \
     --manifest $DATA_DIR/manifests/train_manifest_el.json \
     --lang_vocab configs/lang_vocab.json \
     --output_dir $CHECKPOINT_DIR \
-    --epochs 50 \
-    --batch_size 32 \
+    --epochs $EPOCHS \
+    --batch_size $BATCH_SIZE \
     --lr 1e-4 2>&1 | tee training.log
 
 echo ""
@@ -114,3 +149,8 @@ echo ""
 echo "To download your model:"
 echo "  runpodctl send $CHECKPOINT_DIR/greek_best.pt"
 echo ""
+if [ "$FULL_TRAINING" == "false" ]; then
+    echo "This was a quick test. For full training, run:"
+    echo "  bash train_runpod.sh --full"
+    echo ""
+fi
