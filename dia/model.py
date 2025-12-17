@@ -16,15 +16,29 @@ def _sample_next_token(
     use_cfg_filter: bool,
     cfg_filter_top_k: int | None = None,
 ) -> torch.Tensor:
+    # Check for NaN/Inf in logits (indicates model issues)
+    if torch.isnan(logits_BCxV).any() or torch.isinf(logits_BCxV).all():
+        print("Warning: Model produced NaN/Inf logits. This usually means:")
+        print("  - The checkpoint has NaN weights (check if training had NaN loss)")
+        print("  - The model wasn't trained properly")
+        print("  Falling back to random token selection.")
+        # Return random valid tokens as fallback
+        vocab_size = min(1024, logits_BCxV.shape[-1])  # Valid audio tokens are 0-1023
+        return torch.randint(0, vocab_size, (logits_BCxV.shape[0],), device=logits_BCxV.device)
+    
     if temperature == 0.0:
         return torch.argmax(logits_BCxV, dim=-1)
 
     logits_BCxV = logits_BCxV / temperature
+    
+    # Replace any remaining inf/-inf with large finite values
+    logits_BCxV = torch.nan_to_num(logits_BCxV, nan=0.0, posinf=1e4, neginf=-1e4)
+    
     if use_cfg_filter and cfg_filter_top_k is not None:
         _, top_k_indices_BCxV = torch.topk(logits_BCxV, k=cfg_filter_top_k, dim=-1)
         mask = torch.ones_like(logits_BCxV, dtype=torch.bool)
         mask.scatter_(dim=-1, index=top_k_indices_BCxV, value=False)
-        logits_BCxV = logits_BCxV.masked_fill(mask, -torch.inf)
+        logits_BCxV = logits_BCxV.masked_fill(mask, -1e4)  # Use finite value instead of -inf
 
     if top_p < 1.0:
         probs_BCxV = torch.softmax(logits_BCxV, dim=-1)
@@ -39,9 +53,14 @@ def _sample_next_token(
 
         indices_to_remove_BCxV = torch.zeros_like(sorted_indices_to_remove_BCxV)
         indices_to_remove_BCxV.scatter_(dim=-1, index=sorted_indices_BCxV, src=sorted_indices_to_remove_BCxV)
-        logits_BCxV = logits_BCxV.masked_fill(indices_to_remove_BCxV, -torch.inf)
+        logits_BCxV = logits_BCxV.masked_fill(indices_to_remove_BCxV, -1e4)
 
     final_probs_BCxV = torch.softmax(logits_BCxV, dim=-1)
+    
+    # Final safety check - replace any invalid probabilities
+    if torch.isnan(final_probs_BCxV).any() or (final_probs_BCxV < 0).any():
+        print("Warning: Invalid probabilities detected, using uniform distribution")
+        final_probs_BCxV = torch.ones_like(final_probs_BCxV) / final_probs_BCxV.shape[-1]
 
     sampled_indices_BC = torch.multinomial(final_probs_BCxV, num_samples=1)
     sampled_indices_C = sampled_indices_BC.squeeze(-1)
@@ -98,11 +117,31 @@ class Dia:
         dia = cls(config, device)
 
         try:
-            dia.model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+            state_dict = torch.load(checkpoint_path, map_location=device)
+            # Handle checkpoints that wrap state_dict (from training scripts)
+            if 'model_state_dict' in state_dict:
+                state_dict = state_dict['model_state_dict']
+            elif 'state_dict' in state_dict:
+                state_dict = state_dict['state_dict']
+            dia.model.load_state_dict(state_dict)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
         except Exception as e:
             raise RuntimeError(f"Error loading checkpoint from {checkpoint_path}") from e
+
+        # Check for NaN weights (indicates training issues)
+        nan_count = 0
+        total_params = 0
+        for name, param in dia.model.named_parameters():
+            total_params += param.numel()
+            nan_in_param = torch.isnan(param).sum().item()
+            if nan_in_param > 0:
+                nan_count += nan_in_param
+        
+        if nan_count > 0:
+            print(f"⚠️  WARNING: Checkpoint contains {nan_count:,} NaN values out of {total_params:,} parameters!")
+            print(f"   This checkpoint appears to be corrupted (training likely had NaN loss).")
+            print(f"   The model will produce garbage output. Use a different checkpoint.")
 
         dia.model.to(device)
         dia.model.eval()
