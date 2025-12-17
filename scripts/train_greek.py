@@ -77,6 +77,7 @@ class GreekTrainer:
         manifest_path: str,
         output_dir: str,
         pretrained_path: str = None,
+        from_hf: bool = False,
         config: DiaConfig = None,
         device: str = None,
         batch_size: int = 4,
@@ -93,15 +94,24 @@ class GreekTrainer:
         print(f"🔧 Device: {self.device}")
         print(f"📁 Output: {self.output_dir}")
         
-        # Load or create config
-        if config is None:
+        # Load pretrained from HuggingFace (recommended)
+        if from_hf:
+            print("📥 Loading pretrained Dia-1.6B from HuggingFace...")
+            from huggingface_hub import hf_hub_download
+            config_path = hf_hub_download(repo_id="nari-labs/Dia-1.6B", filename="config.json")
+            checkpoint_path = hf_hub_download(repo_id="nari-labs/Dia-1.6B", filename="dia-v0_1.pth")
+            config = DiaConfig.load(config_path)
+            pretrained_path = checkpoint_path
+            print(f"   ✅ Downloaded pretrained model")
+        elif config is None:
             if pretrained_path:
                 # Try to load config from pretrained
                 config_path = Path(pretrained_path).parent / "config.json"
                 if config_path.exists():
                     config = DiaConfig.load(str(config_path))
             if config is None:
-                print("📝 Using default config")
+                print("⚠️  WARNING: Training from scratch without pretrained weights!")
+                print("   This will likely produce poor results. Use --from_hf for better results.")
                 config = create_default_config()
         
         self.config = config
@@ -125,9 +135,10 @@ class GreekTrainer:
         self.model = DiaModel(config)
         
         if pretrained_path:
-            print(f"📥 Loading pretrained weights from {pretrained_path}")
+            print(f"📥 Loading pretrained weights...")
             state_dict = torch.load(pretrained_path, map_location="cpu")
             self.model.load_state_dict(state_dict, strict=False)
+            print(f"   ✅ Loaded weights from {pretrained_path}")
         
         self.model = self.model.to(self.device)
         
@@ -334,7 +345,9 @@ def main():
     parser.add_argument("--output_dir", type=str, default="checkpoints/greek",
                         help="Output directory for checkpoints")
     parser.add_argument("--pretrained", type=str, default=None,
-                        help="Path to pretrained model for fine-tuning")
+                        help="Path to pretrained model checkpoint (.pt/.pth)")
+    parser.add_argument("--from_hf", action="store_true",
+                        help="Start from pretrained Dia-1.6B from HuggingFace (recommended)")
     parser.add_argument("--epochs", type=int, default=50,
                         help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=4,
@@ -351,6 +364,7 @@ def main():
         manifest_path=args.manifest,
         output_dir=args.output_dir,
         pretrained_path=args.pretrained,
+        from_hf=args.from_hf,
         batch_size=args.batch_size,
         lr=args.lr,
         epochs=args.epochs,

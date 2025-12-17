@@ -173,12 +173,14 @@ echo "   Monitor with: tail -f training.log"
 echo ""
 
 # Start training
+# Fine-tune from pretrained Dia-1.6B (recommended)
 python $REPO_DIR/scripts/train_greek.py \
     --manifest $DATA_DIR/manifests/train_manifest_el.json \
     --output_dir $CHECKPOINT_DIR \
+    --from_hf \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
-    --lr 1e-4 2>&1 | tee $CHECKPOINT_DIR/training.log
+    --lr 1e-5 2>&1 | tee $CHECKPOINT_DIR/training.log
 
 echo ""
 echo "=============================================="
