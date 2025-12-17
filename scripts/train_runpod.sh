@@ -67,11 +67,13 @@ pip install -q 'datasets>=2.14.0,<3.0.0'
 echo "✅ Python packages installed"
 
 # Clone repo
-if [ ! -d "dia" ]; then
+REPO_DIR="/workspace/dia"
+if [ ! -d "$REPO_DIR" ]; then
     echo "📥 Cloning repository..."
-    git clone https://github.com/nari-labs/dia.git
+    git clone https://github.com/nari-labs/dia.git $REPO_DIR
 fi
-cd dia
+cd $REPO_DIR
+echo "📂 Working directory: $(pwd)"
 
 # Setup directories
 DATA_DIR="/workspace/data/el"
@@ -132,13 +134,13 @@ echo "   Monitor with: tail -f training.log"
 echo ""
 
 # Start training
-python scripts/train_greek.py \
+python $REPO_DIR/scripts/train_greek.py \
     --manifest $DATA_DIR/manifests/train_manifest_el.json \
-    --lang_vocab configs/lang_vocab.json \
+    --lang_vocab $REPO_DIR/configs/lang_vocab.json \
     --output_dir $CHECKPOINT_DIR \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
-    --lr 1e-4 2>&1 | tee training.log
+    --lr 1e-4 2>&1 | tee $CHECKPOINT_DIR/training.log
 
 echo ""
 echo "=============================================="
