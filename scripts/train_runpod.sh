@@ -16,7 +16,8 @@
 #
 # =============================================================================
 
-set -e
+# Don't exit on error during setup, only during training
+# set -e
 
 # Parse arguments
 FULL_TRAINING=false
@@ -88,13 +89,9 @@ echo ""
 
 # Install system dependencies
 echo "📦 Installing system packages..."
-apt-get update && apt-get install -y \
-    espeak-ng \
-    libsndfile1 \
-    ffmpeg \
-    git \
-    > /dev/null 2>&1
-echo "✅ System packages installed"
+apt-get update > /dev/null 2>&1 || echo "apt-get update failed (may need sudo)"
+apt-get install -y espeak-ng libsndfile1 ffmpeg git > /dev/null 2>&1 || echo "Some packages may already be installed"
+echo "✅ System packages done"
 
 # Install Python dependencies
 echo "📦 Checking Python packages..."
@@ -217,7 +214,12 @@ echo ""
 # Clear GPU memory before starting
 python -c "import torch; torch.cuda.empty_cache()" 2>/dev/null || true
 
-# Start training
+echo ""
+echo "🚀 Starting training..."
+echo ""
+
+# Start training (exit on failure)
+set -e
 python $REPO_DIR/scripts/train_greek.py \
     --manifest $DATA_DIR/manifests/train_manifest_el.json \
     --output_dir $CHECKPOINT_DIR \
