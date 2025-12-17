@@ -55,7 +55,9 @@ class DiaModel(nn.Module):
             spk = self.spk_proj(spk_embed).unsqueeze(1).expand_as(cond)
             cond = cond + spk
         if encoder_out is not None:
-            cond = cond + encoder_out  # simple cross-attn via addition
+            # Pool encoder output to (B, 1, dim) and broadcast to match audio length
+            enc_pooled = encoder_out.mean(dim=1, keepdim=True)  # (B, 1, dim)
+            cond = cond + enc_pooled  # broadcasts to (B, T, dim)
         return self.diffusion_layers(cond)
 
     def decoder_forward(self, tgt_ids_BxTxC, spk_embed=None, encoder_out=None, **kwargs):
