@@ -60,17 +60,39 @@ apt-get update && apt-get install -y \
 echo "✅ System packages installed"
 
 # Install Python dependencies
-echo "📦 Installing Python packages..."
-# Uninstall any conflicting pre-installed packages
-pip uninstall -y torch torchvision torchaudio transformers 2>/dev/null || true
-# Install PyTorch with CUDA 11.8
-pip install -q torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
-# Install compatible transformers version
-pip install -q 'transformers>=4.35.0,<4.40.0'
-# Install other dependencies
-pip install -q huggingface_hub speechbrain tqdm einops soundfile librosa pydantic
-pip install -q 'datasets>=2.14.0,<3.0.0'
-echo "✅ Python packages installed"
+echo "📦 Checking Python packages..."
+
+# Check if PyTorch needs reinstall
+TORCH_VERSION=$(python -c "import torch; print(torch.__version__)" 2>/dev/null || echo "none")
+TORCH_CUDA=$(python -c "import torch; print('cu118' if 'cu118' in torch.__file__ or torch.version.cuda == '11.8' else 'other')" 2>/dev/null || echo "none")
+
+if [[ "$TORCH_VERSION" != "2.1.0"* ]] || [ "$TORCH_CUDA" != "cu118" ]; then
+    echo "📦 Installing PyTorch 2.1.0 with CUDA 11.8 (current: $TORCH_VERSION, cuda: $TORCH_CUDA)..."
+    pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
+    pip install -q torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
+else
+    echo "✅ PyTorch $TORCH_VERSION already installed with CUDA 11.8"
+fi
+
+# Check transformers version
+TRANSFORMERS_VERSION=$(python -c "import transformers; print(transformers.__version__)" 2>/dev/null || echo "none")
+TRANSFORMERS_OK=$(python -c "
+import transformers
+v = tuple(map(int, transformers.__version__.split('.')[:2]))
+print('ok' if (4, 35) <= v < (4, 40) else 'no')
+" 2>/dev/null || echo "no")
+
+if [ "$TRANSFORMERS_OK" != "ok" ]; then
+    echo "📦 Installing compatible transformers (current: $TRANSFORMERS_VERSION)..."
+    pip uninstall -y transformers 2>/dev/null || true
+    pip install -q 'transformers>=4.35.0,<4.40.0'
+else
+    echo "✅ Transformers $TRANSFORMERS_VERSION already compatible"
+fi
+
+# Install other dependencies (pip will skip if already satisfied)
+pip install -q huggingface_hub speechbrain tqdm einops soundfile librosa pydantic 'datasets>=2.14.0,<3.0.0'
+echo "✅ Python packages ready"
 
 # Clone repo
 REPO_DIR="/workspace/dia"
