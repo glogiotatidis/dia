@@ -2,207 +2,161 @@
 """
 Greek TTS Inference Script
 
-Generate Greek speech from text using trained DIA model.
+Test your trained Greek model by generating audio from text.
 
 Usage:
-    # Basic inference
-    python scripts/infer_greek.py \
-        --model_path checkpoints/greek/greek_best.pt \
-        --text "Γεια σας, καλώς ήρθατε" \
-        --output_dir samples/
-
-    # With reference audio (voice cloning)
-    python scripts/infer_greek.py \
-        --model_path checkpoints/greek/greek_best.pt \
-        --text "Πώς είστε σήμερα;" \
-        --reference_wav samples/greek_speaker.wav \
-        --output_dir samples/
+    # Using a trained checkpoint
+    python scripts/infer_greek.py --checkpoint checkpoints/greek/greek_best.pt --text "Γεια σου κόσμε"
+    
+    # Using the pretrained Dia model (for comparison)
+    python scripts/infer_greek.py --pretrained --text "Hello world"
 """
 
 import argparse
-import json
-import re
-import subprocess
 from pathlib import Path
-
-import torch
-import torchaudio
-
 import sys
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dia.model import DiaModel
-from tools.speaker_encoder import SpeakerEncoder
+import soundfile as sf
+import torch
+
+from dia.model import Dia
+from dia.config import DiaConfig, DataConfig, EncoderConfig, DecoderConfig, ModelConfig, TrainingConfig
+from dia.layers import DiaModel
 
 
-def phonemize_greek(text: str) -> str:
-    """Convert Greek text to IPA phonemes using espeak-ng."""
-    text = re.sub(r'[^\w\s\u0370-\u03FF\u1F00-\u1FFF.,;!?]', '', text)
-    text = text.strip()
+def create_default_config():
+    """Create default config matching training."""
+    encoder_config = EncoderConfig(
+        n_layer=12,
+        n_embd=768,
+        n_hidden=3072,
+        n_head=12,
+        head_dim=64,
+    )
+    decoder_config = DecoderConfig(
+        n_layer=12,
+        n_embd=768,
+        n_hidden=3072,
+        gqa_query_heads=12,
+        kv_heads=4,
+        gqa_head_dim=64,
+        cross_query_heads=12,
+        cross_head_dim=64,
+    )
+    model_config = ModelConfig(
+        encoder=encoder_config,
+        decoder=decoder_config,
+        src_vocab_size=256,
+        tgt_vocab_size=1028,
+    )
+    training_config = TrainingConfig(dtype="float32")
+    data_config = DataConfig(
+        text_length=512,
+        audio_length=3072,
+    )
     
-    if not text:
-        return ""
-    
-    try:
-        result = subprocess.run(
-            ["espeak-ng", "-v", "el", "--ipa", "-q", text],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        phonemes = result.stdout.strip()
-        phonemes = re.sub(r'\s+', ' ', phonemes)
-        return phonemes
-    except Exception as e:
-        print(f"Warning: Phonemization failed: {e}")
-        return ""
-
-
-def build_phoneme_vocab(phonemes: str) -> dict:
-    """Build a simple phoneme vocabulary from input."""
-    vocab = {"<pad>": 0, "<unk>": 1}
-    for i, char in enumerate(sorted(set(phonemes))):
-        vocab[char] = i + 10
-    return vocab
+    return DiaConfig(
+        model=model_config,
+        training=training_config,
+        data=data_config,
+    )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Greek TTS Inference")
-    parser.add_argument("--model_path", type=str, required=True,
-                        help="Path to trained model checkpoint")
-    parser.add_argument("--lang_vocab", type=str, default="configs/lang_vocab.json",
-                        help="Path to language vocabulary")
+    parser = argparse.ArgumentParser(description="Generate audio from Greek text")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to trained checkpoint (.pt file)")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to config.json (optional, will use default if not provided)")
+    parser.add_argument("--pretrained", action="store_true",
+                        help="Use pretrained Dia model from HuggingFace")
     parser.add_argument("--text", type=str, required=True,
-                        help="Greek text to synthesize")
-    parser.add_argument("--output_dir", type=str, default="samples",
-                        help="Output directory for generated audio")
-    parser.add_argument("--output_name", type=str, default=None,
-                        help="Output filename (without extension)")
-    parser.add_argument("--reference_wav", type=str, default=None,
-                        help="Reference audio for voice cloning")
-    parser.add_argument("--sample_rate", type=int, default=22050,
-                        help="Output sample rate")
+                        help="Text to synthesize (Greek or English)")
+    parser.add_argument("--output", type=str, default="output.wav",
+                        help="Output audio file path")
     parser.add_argument("--device", type=str, default=None,
-                        help="Device (cuda/cpu/mps)")
+                        help="Device (cuda/cpu)")
+    parser.add_argument("--temperature", type=float, default=1.3,
+                        help="Sampling temperature")
+    parser.add_argument("--top_p", type=float, default=0.95,
+                        help="Top-p sampling")
+    parser.add_argument("--cfg_scale", type=float, default=3.0,
+                        help="Classifier-free guidance scale")
     
     args = parser.parse_args()
     
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    # Determine device
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    
     print(f"🔧 Device: {device}")
     
-    # Load language vocabulary
-    with open(args.lang_vocab) as f:
-        lang_vocab = json.load(f)
-    
-    lang_token = "<el>"
-    lang_token_id = lang_vocab.get(lang_token, 0)
-    print(f"🇬🇷 Language: Greek (token_id={lang_token_id})")
-    
-    # Phonemize input text
-    print(f"\n📝 Input text: {args.text}")
-    phonemes = phonemize_greek(args.text)
-    
-    if not phonemes:
-        print("❌ Failed to phonemize text")
-        return
-    
-    print(f"🔤 Phonemes: {phonemes}")
-    
-    # Build phoneme IDs
-    phoneme_vocab = build_phoneme_vocab(phonemes)
-    phoneme_ids = [phoneme_vocab.get(c, 1) for c in phonemes]
-    input_ids = torch.tensor([lang_token_id] + phoneme_ids).unsqueeze(0).to(device)
-    
-    # Load model
-    print(f"\n📥 Loading model from {args.model_path}")
-    
-    # Create a simple config for model initialization
-    config = {
-        "model": {
-            "encoder_vocab_size": 512,
-            "decoder": {"d_model": 512},
-            "tgt_vocab_size": 1028,
-            "input_dim": 80,
-            "diffusion_steps": 8,
-        }
-    }
-    
-    model = DiaModel(config["model"])
-    state_dict = torch.load(args.model_path, map_location="cpu")
-    model.load_state_dict(state_dict, strict=False)
-    model = model.to(device)
-    model.eval()
-    
-    # Process reference audio if provided
-    ref_audio = None
-    spk_embed = None
-    
-    if args.reference_wav:
-        print(f"🎤 Loading reference audio: {args.reference_wav}")
-        wav, sr = torchaudio.load(args.reference_wav)
-        if sr != args.sample_rate:
-            wav = torchaudio.functional.resample(wav, sr, args.sample_rate)
-        ref_audio = wav.squeeze(0).unsqueeze(0).to(device)
-        
-        # Get speaker embedding
-        spk_encoder = SpeakerEncoder(device=device)
-        spk_embed = spk_encoder.encode(args.reference_wav).unsqueeze(0).to(device)
-    
-    # Generate audio
-    print("\n🎵 Generating audio...")
-    
-    with torch.no_grad():
-        # Build batch
-        batch = {
-            "input_ids": input_ids,
-            "lang_token_ids": torch.tensor([lang_token_id]).to(device),
-        }
-        
-        if spk_embed is not None:
-            batch["spk_embed"] = spk_embed
-        
-        if ref_audio is not None:
-            batch["ref_audio"] = ref_audio
-        
-        # Inference (model.infer method should be implemented)
-        if hasattr(model, 'infer'):
-            audio = model.infer(batch)
-        else:
-            # Fallback: use forward pass and extract audio
-            # This is a placeholder - actual inference depends on model architecture
-            print("⚠️  Using fallback inference mode")
-            output = model.decoder_forward(
-                ref_audio if ref_audio is not None else torch.randn(1, 100, 80).to(device),
-                spk_embed=spk_embed,
-                encoder_out=model.encoder(input_ids, batch["lang_token_ids"])
-            )
-            audio = output.squeeze(0)
-    
-    # Save output
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    if args.output_name:
-        output_name = args.output_name
+    if args.pretrained:
+        # Use pretrained model
+        print("📥 Loading pretrained Dia model...")
+        dia = Dia.from_pretrained("nari-labs/Dia-1.6B", device=device)
     else:
-        # Generate name from text
-        safe_text = re.sub(r'[^\w\s]', '', args.text[:30]).replace(' ', '_')
-        output_name = f"greek_{safe_text}"
+        if not args.checkpoint:
+            print("❌ Error: Either --checkpoint or --pretrained must be specified")
+            sys.exit(1)
+        
+        # Load trained checkpoint
+        print(f"📥 Loading checkpoint: {args.checkpoint}")
+        
+        # Load config
+        if args.config:
+            config = DiaConfig.load(args.config)
+        else:
+            # Try to find config next to checkpoint
+            checkpoint_dir = Path(args.checkpoint).parent
+            config_path = checkpoint_dir / "config.json"
+            if config_path.exists():
+                config = DiaConfig.load(str(config_path))
+                print(f"   Using config from {config_path}")
+            else:
+                print("   Using default config")
+                config = create_default_config()
+        
+        # Create Dia instance
+        dia = Dia(config, device=device)
+        
+        # Load weights
+        state_dict = torch.load(args.checkpoint, map_location=device)
+        dia.model.load_state_dict(state_dict, strict=False)
+        dia.model.to(device)
+        dia.model.eval()
+        
+        # Load DAC model
+        dia._load_dac_model()
     
-    output_path = output_dir / f"{output_name}.wav"
+    # Format text with speaker marker if not present
+    text = args.text
+    if "[S1]" not in text and "[S2]" not in text:
+        text = f"[S1] {text}"
     
-    # Ensure audio is the right shape for saving
-    if audio.dim() == 1:
-        audio = audio.unsqueeze(0)
-    elif audio.dim() > 2:
-        audio = audio.squeeze()
-        if audio.dim() == 1:
-            audio = audio.unsqueeze(0)
+    print(f"📝 Input text: {text}")
+    print(f"🎵 Generating audio...")
     
-    torchaudio.save(str(output_path), audio.cpu(), args.sample_rate)
+    # Generate
+    audio = dia.generate(
+        text=text,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        cfg_scale=args.cfg_scale,
+    )
     
-    print(f"\n✅ Audio saved to: {output_path}")
-    print(f"   Duration: {audio.shape[-1] / args.sample_rate:.2f}s")
+    # Save
+    sf.write(args.output, audio, 44100)
+    print(f"✅ Audio saved to: {args.output}")
+    print(f"   Duration: {len(audio) / 44100:.2f} seconds")
 
 
 if __name__ == "__main__":
