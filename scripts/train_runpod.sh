@@ -175,7 +175,6 @@ echo ""
 # Start training
 python $REPO_DIR/scripts/train_greek.py \
     --manifest $DATA_DIR/manifests/train_manifest_el.json \
-    --lang_vocab $REPO_DIR/configs/lang_vocab.json \
     --output_dir $CHECKPOINT_DIR \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
