@@ -70,6 +70,66 @@ To use reference audio (zero-shot style cloning):
 
 ---
 
+## ⚡ Fast Inference
+
+Optimized inference for both GPU and CPU. See [docs/INFERENCE_OPTIMIZATION.md](docs/INFERENCE_OPTIMIZATION.md) for the full guide.
+
+### GPU (2-4x faster)
+
+```bash
+python example/fast_generation.py --text "[S1] Hello world" --level 3
+```
+
+Or programmatically:
+
+```python
+from dia.model import Dia
+from dia.fast_inference import create_fast_generate
+
+model = Dia.from_pretrained("nari-labs/Dia-1.6B", device="cuda")
+fast_generate = create_fast_generate(model)
+audio = fast_generate("[S1] Hello world!")
+```
+
+### CPU with Quantization (2-4x faster than baseline CPU)
+
+```bash
+python example/fast_generation.py --cpu --quantize --text "[S1] Hello world"
+```
+
+Or programmatically:
+
+```python
+from dia.model import Dia
+from dia.fast_inference import optimize_for_cpu, create_cpu_generate
+
+optimize_for_cpu(num_threads=8)
+model = Dia.from_pretrained("nari-labs/Dia-1.6B", device="cpu")
+fast_generate = create_cpu_generate(model, quantize=True)
+audio = fast_generate("[S1] Hello world!")
+```
+
+### Benchmark
+
+```bash
+# GPU benchmark
+python example/fast_generation.py --benchmark --level 3
+
+# CPU benchmark
+python example/fast_generation.py --cpu --quantize --benchmark
+```
+
+### Optimization Summary
+
+| Device | Optimization | Speedup |
+|--------|--------------|---------|
+| GPU | torch.compile + FP16 | 2-3x |
+| GPU | + INT8 quantization | 3-4x |
+| CPU | INT8 quantization | 2-4x |
+| CPU | + torch.compile | 3-5x |
+
+---
+
 ## 💡 Notes
 
 - Uses espeak-ng to phonemize all input text (per-language IPA)

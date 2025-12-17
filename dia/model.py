@@ -49,12 +49,14 @@ def _sample_next_token(
 
 
 class Dia:
-    def __init__(self, config: DiaConfig, device: torch.device = torch.device("cuda")):
+    def __init__(self, config: DiaConfig, device: torch.device = torch.device("cuda"), 
+                 optimize_for_inference: bool = True):
         """Initializes the Dia model.
 
         Args:
             config: The configuration object for the model.
             device: The device to load the model onto.
+            optimize_for_inference: If True, enable CUDA optimizations for faster inference.
 
         Raises:
             RuntimeError: If there is an error loading the DAC model.
@@ -64,6 +66,14 @@ class Dia:
         self.device = device
         self.model = DiaModel(config)
         self.dac_model = None
+        
+        # Apply CUDA optimizations for inference
+        if optimize_for_inference and device.type == "cuda":
+            # Enable cuDNN autotuner to find fastest algorithms
+            torch.backends.cudnn.benchmark = True
+            # Enable TensorFloat-32 for faster matmuls on Ampere+
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
     @classmethod
     def from_local(cls, config_path: str, checkpoint_path: str, device: torch.device = torch.device("cuda")) -> "Dia":
@@ -211,6 +221,7 @@ class Dia:
         use_torch_compile: bool = False,
         cfg_filter_top_k: int = 35,
         audio_prompt_path: str | None = None,
+        use_fp16: bool = False,
     ) -> np.ndarray:
         """
         Generates audio from a text prompt (and optional audio prompt) using the Nari model.
@@ -340,7 +351,8 @@ class Dia:
         if use_torch_compile:
             decode_step = torch.compile(
                 self.model.decoder.decode_step,
-                mode="default",
+                mode="reduce-overhead",  # Better for inference with small batch sizes
+                fullgraph=True,  # Capture full graph for maximum optimization
             )
 
         tgt_padding_mask = (
